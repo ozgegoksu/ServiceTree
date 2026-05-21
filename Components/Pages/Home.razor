@@ -1,0 +1,1866 @@
+﻿@page "/"
+@using ServiceTreeDemo
+@using ServiceTreeDemo.Models
+@using ServiceTreeDemo.Services
+@inject ServiceTreeService TreeService
+@inject ServiceTreeDemo.Services.HealthCheckService HealthChecker
+@inject IJSRuntime JS
+@rendermode InteractiveServer
+@implements IDisposable
+
+<div class="st-shell" id="app-shell">
+
+    <!-- ═══ TOP BAR ═══ -->
+    <header class="st-topbar">
+        <div class="st-topbar-left">
+            <span class="st-logo">🌐</span>
+            <span class="st-title">ServiceMap</span>
+            @if (ShowAllNodes)
+            {
+                <button class="st-btn-home" title="Ana Sayfaya Dön" @onclick="GoHome">⌂ Ana Sayfa</button>
+                <span class="st-breadcrumb-sep">›</span>
+                <span class="st-subtitle">@(ActiveProject is not null ? ActiveProject.Name : "Tüm Servisler")</span>
+            }
+        </div>
+        <div class="st-topbar-center">
+            <div class="st-search-wrap">
+                <span class="st-search-icon">🔍</span>
+                <input class="st-search" placeholder="Servis veya proje ara..." @bind="SearchQuery" @bind:event="oninput" />
+                @if (!string.IsNullOrEmpty(SearchQuery))
+                {
+                    <button class="st-search-clear" @onclick="() => SearchQuery = string.Empty">✕</button>
+                }
+            </div>
+        </div>
+        <div class="st-topbar-right">
+            <span class="st-badge blue">@VisibleNodes.Count servis</span>
+            <span class="st-badge gray">@VisibleConnections.Count bağlantı</span>
+
+            <!-- Zoom controls -->
+            <div class="st-zoom-group">
+                <button class="st-zoom-btn" title="Uzaklaştır" @onclick="ZoomOut">−</button>
+                <button class="st-zoom-btn" title="Sıfırla" @onclick="ResetZoom">⊡</button>
+                <button class="st-zoom-btn" title="Yakınlaştır" @onclick="ZoomIn">+</button>
+            </div>
+
+            <!-- Auto Layout -->
+            <button class="st-btn-secondary" title="Otomatik Yerleşim" @onclick="RunAutoLayout">⚡ Düzenle</button>
+
+            <!-- Export -->
+            <button class="st-btn-secondary" title="SVG olarak kaydet" @onclick="ExportSVG">⬇ SVG</button>
+            <button class="st-btn-secondary" title="PNG olarak kaydet" @onclick="ExportPNG">⬇ PNG</button>
+
+            <!-- Dark mode toggle -->
+            <button class="st-btn-theme" title="Tema değiştir" @onclick="ToggleTheme">@(IsDark ? "☀️" : "🌙")</button>
+
+            <!-- Guide -->
+            <button class="st-btn-secondary st-btn-guide" title="Nasıl kullanılır?" @onclick="() => ShowGuide = true">❓ Rehber</button>
+
+            <!-- Health check -->
+            <button class="st-btn-secondary @(CheckingHealth ? "loading" : "")" title="Servisleri kontrol et" @onclick="RunHealthCheck" disabled="@CheckingHealth">
+                @(CheckingHealth ? "⟳ Kontrol..." : "📡 Kontrol")
+            </button>
+
+        </div>
+    </header>
+
+    <div class="st-body">
+
+        <!-- ═══ LEFT: PROJECT TREE PANEL ═══ -->
+        <aside class="st-sidebar">
+            <div class="st-sidebar-section">
+                <div class="st-sidebar-header">
+                    <span>Projeler</span>
+                    <button class="st-mini-btn" @onclick="() => OpenProjectDialog()">+</button>
+                </div>
+
+                <button class="st-project-btn @(ShowAllNodes && ActiveProject is null ? "active" : "")" @onclick="ShowAll">
+                    <span>🗺️</span>
+                    <div class="st-project-info">
+                        <div class="st-project-name">Tüm Servisler</div>
+                        <div class="st-project-meta">@TreeService.Nodes.Count servis</div>
+                    </div>
+                </button>
+
+                @foreach (var project in FilteredProjects)
+                {
+                    var isActive = ActiveProject?.Id == project.Id;
+                    var count = TreeService.GetNodesForProject(project.Id).Count;
+                    <div class="st-project-item @(isActive ? "open" : "")">
+                        <div class="st-project-btn-row">
+                            <button class="st-project-btn @(isActive ? "active" : "")" @onclick="() => SelectProject(project)" style="flex:1;min-width:0">
+                                <span class="st-project-color-dot" style="background:@project.Color"></span>
+                                <div class="st-project-info">
+                                    <div class="st-project-name">@project.Name</div>
+                                    <div class="st-project-meta">@count servis · @project.Owner</div>
+                                </div>
+                                <div class="st-project-dot" style="background:@project.Color"></div>
+                            </button>
+                            <button class="st-project-delete-btn"
+                                    title="Projeyi sil"
+                                    @onclick:stopPropagation
+                                    @onclick="() => DeleteProject(project)">
+                                🗑
+                            </button>
+                        </div>
+
+                        @if (isActive)
+                        {
+                            <div class="st-project-services">
+                                @foreach (var node in TreeService.GetNodesForProject(project.Id))
+                                {
+                                    <button class="st-service-leaf @(SelectedNode?.Id == node.Id ? "selected" : "")"
+                                            @onclick="() => SelectNode(node)">
+                                        <span class="st-status-dot st-status-@node.Status.ToLower()"></span>
+                                        <span class="st-leaf-name">@node.Name</span>
+                                        <span class="st-leaf-tech">@node.Technology</span>
+                                    </button>
+                                }
+                            </div>
+                        }
+                    </div>
+                }
+            </div>
+
+            <div class="st-sidebar-section">
+                <div class="st-sidebar-header"><span>Filtrele</span></div>
+                <div class="st-filter-group">
+                    <div class="st-filter-label">Durum</div>
+                    @foreach (var s in new[] { "Active", "Down" })
+                    {
+                        <label class="st-filter-check">
+                            <input type="checkbox" checked="@StatusFilter.Contains(s)"
+                                   @onchange="e => ToggleStatusFilter(s, (bool)e.Value!)" />
+                            <span class="st-status-dot st-status-@s.ToLower()"></span> @s
+                        </label>
+                    }
+                </div>
+                <div class="st-filter-group">
+                    <div class="st-filter-label">Teknoloji</div>
+                    @foreach (var t in new[] { "REST", "SOAP", "JAR", "gRPC", "MQ", "Anasistem", "UI" })
+                    {
+                        <label class="st-filter-check">
+                            <input type="checkbox" checked="@TechFilter.Contains(t)"
+                                   @onchange="e => ToggleTechFilter(t, (bool)e.Value!)" />
+                            <span class="st-tech-pill @t.ToLower()">@t</span>
+                        </label>
+                    }
+                </div>
+            </div>
+
+            <!-- Minimap -->
+            <div class="st-minimap-wrap">
+                <div class="st-minimap-label">Genel Görünüm</div>
+                <canvas id="minimap-canvas" class="st-minimap-canvas" width="200" height="110"></canvas>
+            </div>
+        </aside>
+
+        <!-- ═══ CENTER: CANVAS ═══ -->
+        <main class="st-canvas-wrap" id="canvas-wrap" style="position:relative">
+
+            @if (ActiveProject is null && !ShowAllNodes)
+            {
+                <div class="st-welcome">
+                    @if (!TreeService.Projects.Any())
+                    {
+                        <!-- Empty state — first time user -->
+                        <div class="st-welcome-empty">
+                            <div class="st-welcome-icon">🌐</div>
+                            <h2>ServiceMap'e Hoş Geldiniz</h2>
+                            <p class="st-welcome-sub">Kurumunuzdaki tüm dijital servisleri ve aralarındaki bağlantıları tek haritada yönetin.</p>
+                            <div class="st-welcome-features">
+                                <div class="st-feature-item"><span class="st-feature-icon">🗂️</span><span>Projeler oluşturun ve servisleri gruplandırın</span></div>
+                                <div class="st-feature-item"><span class="st-feature-icon">🔗</span><span>Servisler arası bağımlılıkları haritalayın</span></div>
+                                <div class="st-feature-item"><span class="st-feature-icon">📡</span><span>Health Check ile canlı durum izleyin</span></div>
+                                <div class="st-feature-item"><span class="st-feature-icon">⬇️</span><span>SVG / PNG olarak dışa aktarın</span></div>
+                            </div>
+                            <div class="st-welcome-fabs">
+                                <button class="st-fab st-fab-project" title="Yeni Proje Ekle" @onclick="() => OpenProjectDialog()">
+                                    <span class="st-fab-icon">🗂️</span>
+                                    <span class="st-fab-label">İlk Projeyi Oluştur</span>
+                                </button>
+                                <button class="st-btn-guide-inline" @onclick="() => ShowGuide = true">❓ Nasıl kullanılır?</button>
+                            </div>
+                        </div>
+                    }
+                    else
+                    {
+                        <!-- Has projects — show cards -->
+                        <div class="st-welcome-icon">🌐</div>
+                        <h2>ServiceMap</h2>
+                        <p>Soldaki panelden bir proje seçin veya tüm servisleri görüntüleyin.</p>
+                        <div class="st-project-cards">
+                            @foreach (var p in TreeService.Projects)
+                            {
+                                <div class="st-project-card" style="border-color:@p.Color" @onclick="() => SelectProject(p)">
+                                    <div class="st-project-card-icon" style="background:@p.Color">
+                                        <span style="color:#fff;font-size:1.1rem;font-weight:700">@p.Name.Substring(0, Math.Min(2, p.Name.Length)).ToUpper()</span>
+                                    </div>
+                                    <div class="st-project-card-name">@p.Name</div>
+                                    <div class="st-project-card-desc">@p.Description</div>
+                                    <div class="st-project-card-footer">
+                                        <span>@TreeService.GetNodesForProject(p.Id).Count servis</span>
+                                        <span class="st-status-badge @p.Status.ToLower()">@p.Status</span>
+                                    </div>
+                                </div>
+                            }
+                        </div>
+                        <!-- Welcome FABs -->
+                        <div class="st-welcome-fabs">
+                            <button class="st-fab st-fab-project" title="Yeni Proje Ekle" @onclick="() => OpenProjectDialog()">
+                                <span class="st-fab-icon">🗂️</span>
+                                <span class="st-fab-label">Yeni Proje</span>
+                            </button>
+                            <button class="st-fab st-fab-service" title="Yeni Servis Ekle" @onclick="() => OpenNodeDialog()">
+                                <span class="st-fab-icon">⚙️</span>
+                                <span class="st-fab-label">Yeni Servis</span>
+                            </button>
+                        </div>
+                    }
+                </div>
+            }
+            else
+            {
+                <!-- Zoom hint -->
+                <div class="st-canvas-hints">
+                    <span>🖱 Tekerlek: zoom &nbsp;·&nbsp; Alt+Sürükle: kaydır &nbsp;·&nbsp; Node sürükle: taşı</span>
+                </div>
+
+                <!-- SVG CANVAS -->
+                <div class="st-canvas" id="st-canvas" @onclick="DeselectAll">
+                    <div class="st-canvas-inner" id="st-canvas-inner">
+
+                        <svg class="st-svg" id="st-svg" xmlns="http://www.w3.org/2000/svg">
+                            <defs>
+                                <marker id="arr-rest" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+                                    <polygon points="0 0, 10 3.5, 0 7" fill="#4f86c6" />
+                                </marker>
+                                <marker id="arr-soap" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+                                    <polygon points="0 0, 10 3.5, 0 7" fill="#8e44ad" />
+                                </marker>
+                                <marker id="arr-mq" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+                                    <polygon points="0 0, 10 3.5, 0 7" fill="#e67e22" />
+                                </marker>
+                                <marker id="arr-default" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+                                    <polygon points="0 0, 10 3.5, 0 7" fill="#7f8c8d" />
+                                </marker>
+                                <marker id="arr-grpc" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+                                    <polygon points="0 0, 10 3.5, 0 7" fill="#16a085" />
+                                </marker>
+                                <marker id="arr-jar" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+                                    <polygon points="0 0, 10 3.5, 0 7" fill="#f1c40f" />
+                                </marker>
+                                <marker id="arr-ui" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+                                    <polygon points="0 0, 10 3.5, 0 7" fill="#f8fafc" stroke="#94a3b8" stroke-width="0.5" />
+                                </marker>
+                                <filter id="glow">
+                                    <feGaussianBlur stdDeviation="3" result="coloredBlur" />
+                                    <feMerge><feMergeNode in="coloredBlur" /><feMergeNode in="SourceGraphic" /></feMerge>
+                                </filter>
+                            </defs>
+
+                            @foreach (var conn in VisibleConnections)
+                            {
+                                var src = TreeService.GetNode(conn.SourceId);
+                                var tgt = TreeService.GetNode(conn.TargetId);
+                                if (src is null || tgt is null) continue;
+
+                                var isHighlighted = SelectedNode is not null &&
+                                (conn.SourceId == SelectedNode.Id || conn.TargetId == SelectedNode.Id);
+                                var isDimmed = SelectedNode is not null && !isHighlighted;
+
+                                double cx1 = src.PositionX + NodeW / 2;
+                                double cy1 = src.PositionY + NodeH / 2;
+                                double cx2 = tgt.PositionX + NodeW / 2;
+                                double cy2 = tgt.PositionY + NodeH / 2;
+
+                                double dx = cx2 - cx1;
+                                double dy = cy2 - cy1;
+                                double len = Math.Sqrt(dx * dx + dy * dy);
+                                if (len < 1) continue;
+
+                                double ux = dx / len;
+                                double uy = dy / len;
+
+                                double trim = 68;
+                                double x1e = cx1 + ux * trim;
+                                double y1e = cy1 + uy * trim;
+                                double x2e = cx2 - ux * trim;
+                                double y2e = cy2 - uy * trim;
+
+                                var sameConnections = VisibleConnections
+                                .Where(c =>
+                                (c.SourceId == conn.SourceId && c.TargetId == conn.TargetId) ||
+                                (c.SourceId == conn.TargetId && c.TargetId == conn.SourceId))
+                                .OrderBy(c => c.Id)
+                                .ToList();
+
+                                int total = sameConnections.Count;
+                                int index = sameConnections.FindIndex(c => c.Id == conn.Id);
+
+                                double spacing = 32;
+                                double offset = (index - (total - 1) / 2.0) * spacing;
+
+                                double midX = (x1e + x2e) / 2;
+                                double midY = (y1e + y2e) / 2;
+
+                                double baseCurve = total > 1 ? 10 : 30;
+
+                                double cpx = midX - uy * (baseCurve + offset);
+                                double cpy = midY + ux * (baseCurve + offset);
+
+                                var (stroke, markerId) = GetConnStyle(conn.ConnectionType);
+                                var strokeW = isHighlighted ? "2.8" : "1.8";
+                                var opacity = isDimmed ? "0.18" : isHighlighted ? "1" : "0.75";
+
+                                <path d="M @x1e.F() @y1e.F() Q @cpx.F() @cpy.F() @x2e.F() @y2e.F()"
+                                      fill="none"
+                                      stroke="@stroke"
+                                      stroke-width="@strokeW"
+                                      marker-end="url(#@markerId)"
+                                      opacity="@opacity"
+                                      filter="@(isHighlighted ? "url(#glow)" : "none")" />
+                            }
+
+                            <!-- Invisible click targets for connections -->
+                            @foreach (var conn in VisibleConnections)
+                            {
+                                var src = TreeService.GetNode(conn.SourceId);
+                                var tgt = TreeService.GetNode(conn.TargetId);
+                                if (src is null || tgt is null) continue;
+                                double cx1 = src.PositionX + NodeW / 2, cy1 = src.PositionY + NodeH / 2;
+                                double cx2 = tgt.PositionX + NodeW / 2, cy2 = tgt.PositionY + NodeH / 2;
+                                double mx = (cx1 + cx2) / 2, my = (cy1 + cy2) / 2;
+                                <circle cx="@mx.F()" cy="@my.F()" r="10" fill="transparent"
+                                        @onclick:stopPropagation
+                                        @onclick="() => SelectConnection(conn)"
+                                        style="cursor:pointer" />
+                            }
+                        </svg>
+
+                        <!-- Node Cards -->
+                        @foreach (var node in VisibleNodes)
+                        {
+                            var isSelected = SelectedNode?.Id == node.Id;
+                            var isRelated = SelectedNode is not null && IsRelated(node);
+                            var isDimmed = SelectedNode is not null && !isSelected && !isRelated;
+                            var nodeProjects = node.ProjectIds.Select(pid => TreeService.GetProject(pid)).Where(p => p is not null).ToList();
+                            var nodeIdStr = node.Id.ToString();
+
+                            <div class="st-node @node.Status.ToLower() @(isSelected ? "selected" : "") @(isDimmed ? "dimmed" : "") @(isRelated ? "related" : "")"
+                                 id="node-@nodeIdStr"
+                                 style="left:@(node.PositionX)px; top:@(node.PositionY)px; width:@(NodeW)px;"
+                                 @onclick:stopPropagation
+                                 @onclick="() => SelectNode(node)">
+
+                                <div class="st-node-header">
+                                    <span class="st-node-tech @node.Technology.ToLower()">@node.Technology</span>
+                                    <span class="st-node-status @node.Status.ToLower()">@GetStatusIcon(node.Status)</span>
+                                </div>
+                                <div class="st-node-name">@node.Name</div>
+                                <div class="st-node-team">@node.Team</div>
+
+                                @if (!string.IsNullOrEmpty(node.HealthCheckUrl))
+                                {
+                                    <div class="st-node-health-time">
+                                        @(node.LastHealthCheck.HasValue ? "🕐 " + node.LastHealthCheck.Value.ToString("HH:mm") : "📡 kontrol bekleniyor")
+                                    </div>
+                                }
+
+                                @if (nodeProjects.Any())
+                                {
+                                    <div class="st-node-projects">
+                                        @foreach (var proj in nodeProjects.Take(2))
+                                        {
+                                            <span class="st-node-project-dot" style="background:@proj!.Color" title="@proj!.Name"></span>
+                                        }
+                                        @if (nodeProjects.Count > 2)
+                                        {
+                                            <span class="st-node-project-more">+@(nodeProjects.Count - 2)</span>
+                                        }
+                                    </div>
+                                }
+
+                                @if (isSelected)
+                                {
+                                    <div class="st-node-actions">
+                                        <button class="st-node-btn" @onclick:stopPropagation @onclick="() => OpenNodeDialog(node)" title="Düzenle">✏️</button>
+                                        <button class="st-node-btn" @onclick:stopPropagation @onclick="() => OpenAddConnectionDialog(node)" title="Bağlantı ekle">🔗</button>
+                                        <button class="st-node-btn danger" @onclick:stopPropagation @onclick="() => ConfirmDeleteNode(node)" title="Sil">🗑️</button>
+                                    </div>
+                                }
+                            </div>
+                        }
+
+                        @* ── Cross-project ghost nodes ── *@
+                        @* Seçili node varsa, farklı projedeki upstream/downstream servisler ghost olarak gösterilir *@
+                        @if (SelectedNode is not null)
+                        {
+                            foreach (var (ghostNode, ghostConn, isUp) in TreeService.GetCrossProjectNeighbours(SelectedNode.Id))
+                            {
+                                var ghostProjects = ghostNode.ProjectIds
+                                .Select(pid => TreeService.GetProject(pid))
+                                .Where(p => p is not null).ToList();
+                                var firstProjectColor = ghostProjects.FirstOrDefault()?.Color ?? "#999";
+
+                                // Gerçek pozisyonu kullan; canvas sınırına kısıtle
+                                var ghostX = Math.Max(10, ghostNode.PositionX);
+                                var ghostY = Math.Max(10, ghostNode.PositionY);
+
+                                <div class="st-node ghost @ghostNode.Status.ToLower()"
+                                     style="left:@(ghostX)px; top:@(ghostY)px; width:@(NodeW)px; border-color:@firstProjectColor;"
+                                     title="Farklı projeden: @string.Join(", ", ghostProjects.Select(p => p!.Name))">
+
+                                    <div class="st-node-header">
+                                        <span class="st-node-tech @ghostNode.Technology.ToLower()">@ghostNode.Technology</span>
+                                        <span class="st-node-status @ghostNode.Status.ToLower()">@GetStatusIcon(ghostNode.Status)</span>
+                                    </div>
+                                    <div class="st-node-name">@ghostNode.Name</div>
+                                    <div class="st-node-team">@ghostNode.Team</div>
+
+                                    <div class="st-node-projects" style="margin-top:4px">
+                                        @foreach (var proj in ghostProjects.Take(2))
+                                        {
+                                            <span class="st-node-project-dot" style="background:@proj!.Color" title="@proj!.Name"></span>
+                                        }
+                                        <span class="st-cross-project-badge">↗ @(isUp ? "upstream" : "downstream")</span>
+                                    </div>
+                                </div>
+                            }
+                        }
+
+                    </div><!-- /canvas-inner -->
+                </div>
+
+                <!-- Legend -->
+                <div class="st-legend">
+                    <span class="st-legend-item">
+                        <span style="background:#4f86c6;width:12px;height:3px;display:inline-block"></span> REST
+                    </span>
+                    <span class="st-legend-item">
+                        <span style="background:#8e44ad;width:12px;height:3px;display:inline-block"></span> SOAP
+                    </span>
+                    <span class="st-legend-item">
+                        <span style="background:#e67e22;width:12px;height:3px;display:inline-block"></span> MQ
+                    </span>
+                    <span class="st-legend-item">
+                        <span style="background:#16a085;width:12px;height:3px;display:inline-block"></span> gRPC
+                    </span>
+                    <span class="st-legend-item">
+                        <span style="background:#f1c40f;width:12px;height:3px;display:inline-block"></span> JAR
+                    </span>
+                    <span class="st-legend-item">
+                        <span style="background:#c0392b;width:12px;height:3px;display:inline-block"></span> Anasistem
+                    </span>
+                    <span class="st-legend-item">
+                        <span style="background:#f8fafc;border:1px solid #94a3b8;width:12px;height:3px;display:inline-block"></span> UI
+                    </span>
+                </div>
+
+                <!-- Canvas FABs — bottom-left, outside pan/zoom so they never scroll -->
+                <div class="st-canvas-fabs" @onclick:stopPropagation>
+                    <button class="st-fab st-fab-service" title="Yeni Servis Ekle" @onclick="() => OpenNodeDialog()">
+                        <span class="st-fab-icon">⚙️</span>
+                        <span class="st-fab-label">Yeni Servis</span>
+                    </button>
+                    <button class="st-fab st-fab-project" title="Yeni Proje Ekle" @onclick="() => OpenProjectDialog()">
+                        <span class="st-fab-icon">🗂️</span>
+                        <span class="st-fab-label">Yeni Proje</span>
+                    </button>
+                </div>
+            }
+        </main>
+
+        <!-- ═══ RIGHT: DETAIL PANEL ═══ -->
+        <aside class="st-detail @(SelectedNode is not null || SelectedConnection is not null ? "visible" : "")">
+
+            @if (SelectedNode is not null)
+            {
+                var upstreams = TreeService.GetUpstream(SelectedNode.Id);
+                var downstreams = TreeService.GetDownstream(SelectedNode.Id);
+                var nodeProjects = SelectedNode.ProjectIds
+                .Select(pid => TreeService.GetProject(pid))
+                .Where(p => p is not null).ToList();
+
+                <div class="st-detail-header">
+                    <div class="st-detail-status @SelectedNode.Status.ToLower()">@GetStatusIcon(SelectedNode.Status) @SelectedNode.Status</div>
+                    <button class="st-detail-close" @onclick="DeselectAll">✕</button>
+                </div>
+
+                <div class="st-detail-title">@SelectedNode.Name</div>
+                <div class="st-detail-sub">v@SelectedNode.Version · @SelectedNode.Team</div>
+
+                <div class="st-detail-desc">@SelectedNode.Description</div>
+
+                <div class="st-detail-row">
+                    <span class="st-detail-label">Sahip</span>
+                    <span class="st-detail-val">@SelectedNode.Owner</span>
+                </div>
+                <div class="st-detail-row">
+                    <span class="st-detail-label">Teknoloji</span>
+                    <span class="st-tech-pill @SelectedNode.Technology.ToLower()">@SelectedNode.Technology</span>
+                </div>
+
+                @if (SelectedNode.LastHealthCheck.HasValue)
+                {
+                    <div class="st-detail-row">
+                        <span class="st-detail-label">Son kontrol</span>
+                        <span class="st-detail-val">@SelectedNode.LastHealthCheck.Value.ToString("HH:mm:ss")</span>
+                    </div>
+                }
+
+                @if (!string.IsNullOrEmpty(SelectedNode.SwaggerUrl))
+                {
+                    <div class="st-detail-row">
+                        <span class="st-detail-label">Swagger</span>
+                        <a href="@SelectedNode.SwaggerUrl" target="_blank" class="st-link">🔗 Swagger UI</a>
+                    </div>
+                }
+                @if (!string.IsNullOrEmpty(SelectedNode.WsdlUrl))
+                {
+                    <div class="st-detail-row">
+                        <span class="st-detail-label">WSDL</span>
+                        <a href="@SelectedNode.WsdlUrl" target="_blank" class="st-link">🔗 WSDL</a>
+                    </div>
+                }
+
+                @if (nodeProjects.Any())
+                {
+                    <div class="st-detail-section">Projeler</div>
+                    @foreach (var proj in nodeProjects)
+                    {
+                        <div class="st-detail-project-tag" style="border-left:3px solid @proj!.Color">
+                            <span class="st-proj-color-swatch" style="background:@proj!.Color"></span> @proj!.Name
+                            <button class="st-inline-edit" @onclick="() => OpenProjectDialog(proj)">✏️</button>
+                        </div>
+                    }
+                }
+
+                @if (upstreams.Any())
+                {
+                    <div class="st-detail-section">⬆ Upstream (bu servisi çağıranlar)</div>
+                    @foreach (var up in upstreams)
+                    {
+                        var isCrossUp = !up!.ProjectIds.Any(pid => SelectedNode.ProjectIds.Contains(pid));
+                        <div class="st-dep-item @(isCrossUp ? "cross-project" : "")" @onclick="() => SelectNode(up!)">
+                            <span class="st-status-dot st-status-@up!.Status.ToLower()"></span>
+                            <span class="st-dep-name">@up!.Name</span>
+                            <span class="st-leaf-tech">@up!.Technology</span>
+                            @if (isCrossUp)
+                            {
+                                <span class="st-dep-cross-badge" title="Farklı projeden">↗</span>
+                            }
+                        </div>
+                    }
+                }
+
+                @if (downstreams.Any())
+                {
+                    <div class="st-detail-section">⬇ Downstream (bu servisin çağırdıkları)</div>
+                    @foreach (var down in downstreams)
+                    {
+                        var isCrossDown = !down!.ProjectIds.Any(pid => SelectedNode.ProjectIds.Contains(pid));
+                        <div class="st-dep-item @(isCrossDown ? "cross-project" : "")" @onclick="() => SelectNode(down!)">
+                            <span class="st-status-dot st-status-@down!.Status.ToLower()"></span>
+                            <span class="st-dep-name">@down!.Name</span>
+                            <span class="st-leaf-tech">@down!.Technology</span>
+                            @if (isCrossDown)
+                            {
+                                <span class="st-dep-cross-badge" title="Farklı projeden">↗</span>
+                            }
+                        </div>
+                    }
+                }
+
+                <div class="st-detail-actions">
+                    <button class="st-action-btn primary" @onclick="() => OpenNodeDialog(SelectedNode)">✏️ Düzenle</button>
+                    <button class="st-action-btn" @onclick="() => OpenAddConnectionDialog(SelectedNode)">🔗 Bağlantı Ekle</button>
+                    <button class="st-action-btn danger" @onclick="() => ConfirmDeleteNode(SelectedNode)">🗑️ Sil</button>
+                </div>
+            }
+
+            @if (SelectedConnection is not null)
+            {
+                var src = TreeService.GetNode(SelectedConnection.SourceId);
+                var tgt = TreeService.GetNode(SelectedConnection.TargetId);
+                var (stroke, _) = GetConnStyle(SelectedConnection.ConnectionType);
+
+                <div class="st-detail-header">
+                    <div class="st-detail-status" style="background:#f0f4ff;color:#4f86c6">🔗 Bağlantı</div>
+                    <button class="st-detail-close" @onclick="DeselectAll">✕</button>
+                </div>
+
+                <div class="st-detail-title">@SelectedConnection.Label</div>
+                <div class="st-detail-sub" style="color:@stroke">@SelectedConnection.ConnectionType</div>
+
+                <div class="st-detail-row">
+                    <span class="st-detail-label">Kaynak</span>
+                    <span class="st-detail-val">@src?.Name</span>
+                </div>
+                <div class="st-detail-row">
+                    <span class="st-detail-label">Hedef</span>
+                    <span class="st-detail-val">@tgt?.Name</span>
+                </div>
+                <div class="st-detail-actions">
+                    <button class="st-action-btn danger" @onclick="DeleteSelectedConnection">🗑️ Bağlantıyı Sil</button>
+                </div>
+            }
+        </aside>
+
+    </div>
+</div>
+
+<!-- ═══ NODE DIALOG ═══ -->
+@if (ShowNodeDialog)
+{
+    <div class="st-overlay" @onclick="CloseDialogs">
+        <div class="st-modal" @onclick:stopPropagation>
+            <div class="st-modal-header">
+                <h5>@(EditingNode is null ? "➕ Yeni Servis" : "✏️ Servisi Düzenle")</h5>
+                <button class="st-detail-close" @onclick="CloseDialogs">✕</button>
+            </div>
+            <div class="st-form-grid">
+                <div class="st-form-group">
+                    <label>Servis Adı *</label>
+                    <input class="st-input" @bind="NodeForm.Name" placeholder="CustomerService" />
+                </div>
+                <div class="st-form-group">
+                    <label>Versiyon</label>
+                    <input class="st-input" @bind="NodeForm.Version" placeholder="v1.0" />
+                </div>
+                <div class="st-form-group">
+                    <label>Sahip</label>
+                    <input class="st-input" @bind="NodeForm.Owner" placeholder="Takım adı" />
+                </div>
+                <div class="st-form-group">
+                    <label>Ekip</label>
+                    <input class="st-input" @bind="NodeForm.Team" placeholder="Domain adı" />
+                </div>
+                <div class="st-form-group">
+                    <label>Teknoloji</label>
+                    <select class="st-select" @bind="NodeForm.Technology">
+                        <option>REST</option>
+                        <option>SOAP</option>
+                        <option>JAR</option>
+                        <option>gRPC</option>
+                        <option>MQ</option>
+                        <option>Anasistem</option>
+                        <option>UI</option>
+                    </select>
+                </div>
+                <div class="st-form-group">
+                    <label>Durum</label>
+                    <select class="st-select" @bind="NodeForm.Status">
+                        <option>Active</option>
+                        <option>Down</option>
+                    </select>
+                </div>
+                <div class="st-form-group full">
+                    <label>Açıklama</label>
+                    <textarea class="st-input" @bind="NodeForm.Description" rows="2"></textarea>
+                </div>
+                <div class="st-form-group">
+                    <label>Swagger URL</label>
+                    <input class="st-input" @bind="NodeForm.SwaggerUrl" placeholder="https://..." />
+                </div>
+                <div class="st-form-group">
+                    <label>WSDL URL</label>
+                    <input class="st-input" @bind="NodeForm.WsdlUrl" placeholder="https://...wsdl" />
+                </div>
+                <div class="st-form-group full">
+                    <label>Health Check URL</label>
+                    <input class="st-input" @bind="NodeForm.HealthCheckUrl" placeholder="https://.../health" />
+                </div>
+                <div class="st-form-group full">
+                    <label>Projeler</label>
+                    <div class="st-multiselect @(ShowProjectDropdown ? "open" : "")">
+                        <div class="st-multiselect-trigger" @onclick="() => ShowProjectDropdown = !ShowProjectDropdown" @onclick:stopPropagation>
+                            @if (NodeForm.ProjectIds.Count == 0)
+                            {
+                                <span class="st-multiselect-placeholder">Proje seçin...</span>
+                            }
+                            else
+                            {
+                                <div class="st-multiselect-tags">
+                                    @foreach (var id in NodeForm.ProjectIds)
+                                    {
+                                        var p = TreeService.Projects.FirstOrDefault(x => x.Id == id);
+                                        if (p is not null)
+                                        {
+                                            <span class="st-tag" style="border-color:@p.Color">
+                                                @p.Name
+                                                <button class="st-tag-remove" @onclick="() => ToggleNodeProject(p.Id, false)" @onclick:stopPropagation>✕</button>
+                                            </span>
+                                        }
+                                    }
+                                </div>
+                            }
+                            <span class="st-multiselect-arrow">@(ShowProjectDropdown ? "▲" : "▼")</span>
+                        </div>
+                        @if (ShowProjectDropdown)
+                        {
+                            <div class="st-multiselect-dropdown" @onclick:stopPropagation>
+                                @foreach (var proj in TreeService.Projects)
+                                {
+                                    var selected = NodeForm.ProjectIds.Contains(proj.Id);
+                                    <div class="st-multiselect-option @(selected ? "selected" : "")"
+                                         @onclick="() => ToggleNodeProject(proj.Id, !selected)">
+                                        <span class="st-option-check">@(selected ? "✔" : "")</span>
+                                        <span class="st-option-color" style="background:@proj.Color"></span>
+                                        <span>@proj.Name</span>
+                                    </div>
+                                }
+                            </div>
+                        }
+                    </div>
+                </div>
+            </div>
+            <div class="st-modal-footer">
+                <button class="st-action-btn primary" @onclick="SaveNode">💾 Kaydet</button>
+                <button class="st-action-btn" @onclick="CloseDialogs">İptal</button>
+            </div>
+        </div>
+    </div>
+}
+
+<!-- ═══ CONNECTION DIALOG ═══ -->
+@if (ShowConnectionDialog)
+{
+    <div class="st-overlay" @onclick="CloseDialogs">
+        <div class="st-modal small" @onclick:stopPropagation>
+            <div class="st-modal-header">
+                <h5>🔗 Bağlantı Ekle</h5>
+                <button class="st-detail-close" @onclick="CloseDialogs">✕</button>
+            </div>
+            <div class="st-form-grid">
+                <div class="st-form-group full">
+                    <label>Kaynak Servis *</label>
+                    <select class="st-select" @bind="ConnForm.SourceIdStr">
+                        <option value="">— Seçin —</option>
+                        @foreach (var n in TreeService.Nodes)
+                        {
+                            <option value="@n.Id">@n.Name</option>
+                        }
+                    </select>
+                </div>
+                <div class="st-form-group full">
+                    <label>Hedef Servis *</label>
+                    <select class="st-select" @bind="ConnForm.TargetIdStr">
+                        <option value="">— Seçin —</option>
+                        @foreach (var n in TreeService.Nodes)
+                        {
+                            <option value="@n.Id">@n.Name</option>
+                        }
+                    </select>
+                </div>
+                <div class="st-form-group">
+                    <label>Etiket</label>
+                    <input class="st-input" @bind="ConnForm.Label" placeholder="API çağrısı" />
+                </div>
+                <div class="st-form-group">
+                    <label>Tip</label>
+                    <select class="st-select" @bind="ConnForm.ConnectionType">
+                        <option>REST</option>
+                        <option>SOAP</option>
+                        <option>MQ</option>
+                        <option>gRPC</option>
+                        <option>JAR</option>
+                    </select>
+                </div>
+            </div>
+            <div class="st-modal-footer">
+                <button class="st-action-btn primary" @onclick="SaveConnection">💾 Ekle</button>
+                <button class="st-action-btn" @onclick="CloseDialogs">İptal</button>
+            </div>
+        </div>
+    </div>
+}
+
+<!-- ═══ PROJECT DIALOG ═══ -->
+@if (ShowProjectDialog)
+{
+    <div class="st-overlay" @onclick="CloseDialogs">
+        <div class="st-modal small" @onclick:stopPropagation>
+            <div class="st-modal-header">
+                <h5>@(EditingProject is null ? "➕ Yeni Proje" : "✏️ Projeyi Düzenle")</h5>
+                <button class="st-detail-close" @onclick="CloseDialogs">✕</button>
+            </div>
+            <div class="st-form-grid">
+                <div class="st-form-group full">
+                    <label>Proje Adı *</label>
+                    <input class="st-input" @bind="ProjForm.Name" />
+                </div>
+                <div class="st-form-group full">
+                    <label>Açıklama</label>
+                    <textarea class="st-input" @bind="ProjForm.Description" rows="2"></textarea>
+                </div>
+                <div class="st-form-group">
+                    <label>Sahip</label>
+                    <input class="st-input" @bind="ProjForm.Owner" />
+                </div>
+                <div class="st-form-group">
+                    <label>Renk</label>
+                    <input type="color" class="st-input" @bind="ProjForm.Color" style="height:36px;padding:2px 4px" />
+                </div>
+                <div class="st-form-group">
+                    <label>Durum</label>
+                    <select class="st-select" @bind="ProjForm.Status">
+                        <option>Active</option>
+                        <option>Deprecated</option>
+                        <option>Planning</option>
+                    </select>
+                </div>
+            </div>
+            <div class="st-modal-footer">
+                <button class="st-action-btn primary" @onclick="SaveProject">💾 Kaydet</button>
+                <button class="st-action-btn" @onclick="CloseDialogs">İptal</button>
+            </div>
+        </div>
+    </div>
+}
+
+<!-- ═══ DELETE CONFIRM ═══ -->
+@if (ShowDeleteConfirm)
+{
+    <div class="st-overlay" @onclick="() => ShowDeleteConfirm = false">
+        <div class="st-modal small" @onclick:stopPropagation>
+            <div class="st-modal-header">
+                <h5>⚠️ Servisi Sil</h5>
+                <button class="st-detail-close" @onclick="() => ShowDeleteConfirm = false">✕</button>
+            </div>
+            <p style="color:var(--text2);margin:1rem 1.25rem">
+                <strong>@NodeToDelete?.Name</strong> ve tüm bağlantıları silinecektir. Emin misiniz?
+            </p>
+            <div class="st-modal-footer">
+                <button class="st-action-btn danger" @onclick="ExecuteDeleteNode">🗑️ Evet, Sil</button>
+                <button class="st-action-btn" @onclick="() => ShowDeleteConfirm = false">İptal</button>
+            </div>
+        </div>
+    </div>
+}
+
+<!-- ═══ ONBOARDING GUIDE MODAL ═══ -->
+@if (ShowGuide)
+{
+    <div class="st-overlay" @onclick="() => ShowGuide = false">
+        <div class="st-modal st-guide-modal" @onclick:stopPropagation>
+            <div class="st-modal-header">
+                <h5>📘 ServiceMap Kullanım Rehberi</h5>
+                <button class="st-detail-close" @onclick="() => ShowGuide = false">✕</button>
+            </div>
+            <div class="st-guide-body">
+                <div class="st-guide-step">
+                    <div class="st-guide-num">1</div>
+                    <div>
+                        <strong>Proje Oluşturun</strong>
+                        <p>Sol paneldeki <em>+</em> butonuna veya ana ekrandaki <em>Yeni Proje</em> butonuna tıklayın. Her projeye bir ad, renk ve sahip ekleyin.</p>
+                    </div>
+                </div>
+                <div class="st-guide-step">
+                    <div class="st-guide-num">2</div>
+                    <div>
+                        <strong>Servis Ekleyin</strong>
+                        <p>Harita ekranındayken sol alttaki <em>Yeni Servis</em> butonuna basın. Servis adı, teknoloji (REST/SOAP/MQ…), versiyon ve URL bilgilerini girin. Servisi bir veya birden fazla projeye bağlayabilirsiniz.</p>
+                    </div>
+                </div>
+                <div class="st-guide-step">
+                    <div class="st-guide-num">3</div>
+                    <div>
+                        <strong>Bağlantı Kurun</strong>
+                        <p>Bir servise tıklayın, ardından <em>🔗 Bağlantı Ekle</em> butonuyla başka bir servise bağlayın. Bağlantı tipini (REST, SOAP, MQ…) ve etiketini belirtin.</p>
+                    </div>
+                </div>
+                <div class="st-guide-step">
+                    <div class="st-guide-num">4</div>
+                    <div>
+                        <strong>Haritayı Düzenleyin</strong>
+                        <p>Servisleri sürükleyerek taşıyın. <em>⚡ Düzenle</em> butonu ile otomatik düzen uygulayın. Tekerlek ile zum yapın, Alt+sürükle ile kaydırın.</p>
+                    </div>
+                </div>
+                <div class="st-guide-step">
+                    <div class="st-guide-num">5</div>
+                    <div>
+                        <strong>Health Check</strong>
+                        <p>Her servise bir Health Check URL ekleyin. <em>📡 Kontrol</em> butonuyla tüm servislerin durumunu gerçek zamanlı sorgulayın. Yeşil = Active, Sarı = Degraded, Kırmızı = Down.</p>
+                    </div>
+                </div>
+                <div class="st-guide-step">
+                    <div class="st-guide-num">6</div>
+                    <div>
+                        <strong>Dışa Aktarın</strong>
+                        <p>⬇ SVG veya ⬇ PNG butonlarıyla haritanın tüm içeriğini (servisler + bağlantılar) görsel olarak indirin. Toplantı sunumları için idealdir.</p>
+                    </div>
+                </div>
+            </div>
+            <div class="st-modal-footer">
+                <button class="st-action-btn primary" @onclick="() => { ShowGuide = false; OpenProjectDialog(); }">➕ İlk Projeyi Oluştur</button>
+                <button class="st-action-btn" @onclick="() => ShowGuide = false">Kapat</button>
+            </div>
+        </div>
+    </div>
+}
+
+
+@code {
+    // ── Constants ───────────────────────────────────────────
+    private const double NodeW = 155;
+    private const double NodeH = 95;
+
+    // ── State ───────────────────────────────────────────────
+    private ServiceProject? ActiveProject;
+    private bool ShowAllNodes = false;
+    private ServiceNode? SelectedNode;
+    private ServiceConnection? SelectedConnection;
+    private string SearchQuery = "";
+    private HashSet<string> StatusFilter = new() { "Active", "Down" };
+    private HashSet<string> TechFilter = new() { "REST", "SOAP", "JAR", "gRPC", "MQ", "Anasistem", "UI" };
+    private bool ShowProjectDropdown = false;
+    private bool IsDark = false;
+    private bool CheckingHealth = false;
+    private bool ShowGuide = false;
+
+    // ── Dialog state ────────────────────────────────────────
+    private bool ShowNodeDialog;
+    private bool ShowConnectionDialog;
+    private bool ShowProjectDialog;
+    private bool ShowDeleteConfirm;
+    private ServiceNode? EditingNode;
+    private ServiceProject? EditingProject;
+    private ServiceNode? NodeToDelete;
+
+    // ── Form models ─────────────────────────────────────────
+    private NodeFormModel NodeForm = new();
+    private ConnectionFormModel ConnForm = new();
+    private ProjectFormModel ProjForm = new();
+
+    // ── JS references ────────────────────────────────────────
+    private DotNetObjectReference<Home>? _dotNetRef;
+
+    // ── Computed ────────────────────────────────────────────
+    private List<ServiceNode> VisibleNodes
+    {
+        get
+        {
+            var nodes = ActiveProject is not null
+                ? TreeService.GetNodesForProject(ActiveProject.Id)
+                : TreeService.Nodes;
+
+            if (!string.IsNullOrWhiteSpace(SearchQuery))
+                nodes = nodes.Where(n =>
+                    n.Name.Contains(SearchQuery, StringComparison.OrdinalIgnoreCase) ||
+                    n.Owner.Contains(SearchQuery, StringComparison.OrdinalIgnoreCase) ||
+                    n.Team.Contains(SearchQuery, StringComparison.OrdinalIgnoreCase)
+                ).ToList();
+
+            return nodes
+                .Where(n => StatusFilter.Contains(n.Status))
+                .Where(n => string.IsNullOrEmpty(n.Technology) || TechFilter.Contains(n.Technology))
+                .ToList();
+        }
+    }
+
+    private List<ServiceConnection> VisibleConnections
+    {
+        get
+        {
+            var nodeIds = VisibleNodes.Select(n => n.Id).ToHashSet();
+            return TreeService.Connections
+                .Where(c => nodeIds.Contains(c.SourceId) && nodeIds.Contains(c.TargetId))
+                .ToList();
+        }
+    }
+
+    private List<ServiceProject> FilteredProjects
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(SearchQuery)) return TreeService.Projects;
+            return TreeService.Projects
+                .Where(p => p.Name.Contains(SearchQuery, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+        }
+    }
+
+    // ── Lifecycle ────────────────────────────────────────────
+    protected override async Task OnInitializedAsync()
+    {
+        TreeService.OnChange += OnTreeServiceChanged;
+        _dotNetRef = DotNetObjectReference.Create(this);
+    }
+
+    private void OnTreeServiceChanged()
+    {
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            IsDark = await JS.InvokeAsync<bool>("ServiceMap.loadTheme");
+            await JS.InvokeVoidAsync("ServiceMap.initDrag", _dotNetRef);
+            StateHasChanged();
+        }
+
+        // Init drag on each visible node (only when canvas is in DOM)
+        if (ShowAllNodes || ActiveProject is not null)
+        {
+            foreach (var node in VisibleNodes)
+            {
+                var id = node.Id.ToString();
+                await JS.InvokeVoidAsync("eval",
+                    $@"(function(){{
+                        var el = document.getElementById('node-{id}');
+                        var canvas = document.getElementById('st-canvas');
+                        if(el && canvas && !el.__dragInit) {{
+                            el.__dragInit = true;
+                            ServiceMap.enableNodeDrag('{id}', el, canvas);
+                        }}
+                    }})()");
+            }
+
+            // Init zoom/pan once
+            await JS.InvokeVoidAsync("eval",
+                @"(function(){
+                    var c = document.getElementById('st-canvas');
+                    if(c && !c.__zoomInit){ c.__zoomInit=true; ServiceMap.initZoomPan(c); }
+                })()");
+
+            // Update minimap
+            await UpdateMinimapAsync();
+        }
+    }
+
+    public void Dispose()
+    {
+        TreeService.OnChange -= OnTreeServiceChanged;
+        _dotNetRef?.Dispose();
+        _positionDebounce?.Dispose();
+    }
+
+    // ── JS Invokable: drag callbacks ─────────────────────────
+    // IMPORTANT: JSInterop invokeMethodAsync requires Task (not void).
+    // A void return causes the circuit to fault when JS awaits the promise.
+
+    private System.Threading.Timer? _positionDebounce;
+
+    [JSInvokable]
+    public Task OnNodeDragging(string nodeIdStr, double x, double y)
+    {
+        // Live-update the in-memory position so SVG connections redraw smoothly,
+        // but do NOT persist to DB on every mousemove — only on drop.
+        if (Guid.TryParse(nodeIdStr, out var id))
+        {
+            var node = TreeService.GetNode(id);
+            if (node is not null)
+            {
+                node.PositionX = Math.Max(0, x);
+                node.PositionY = Math.Max(0, y);
+                // Trigger a lightweight re-render for SVG arrow updates
+                InvokeAsync(StateHasChanged);
+            }
+        }
+        return Task.CompletedTask;
+    }
+
+    [JSInvokable]
+    public Task OnNodeDropped(string nodeIdStr, double x, double y)
+    {
+        try
+        {
+            if (!Guid.TryParse(nodeIdStr, out var id))
+                return Task.CompletedTask;
+
+            var node = TreeService.GetNode(id);
+            if (node is null)
+                return Task.CompletedTask;
+
+            double safeX = Math.Max(0, double.IsNaN(x) || double.IsInfinity(x) ? node.PositionX : x);
+            double safeY = Math.Max(0, double.IsNaN(y) || double.IsInfinity(y) ? node.PositionY : y);
+
+            // Debounce: cancel any pending save and schedule a new one 400 ms after drop
+            _positionDebounce?.Dispose();
+            _positionDebounce = new System.Threading.Timer(_ =>
+            {
+                InvokeAsync(() => TreeService.UpdateNodePositionAsync(id, safeX, safeY));
+            }, null, 400, System.Threading.Timeout.Infinite);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[OnNodeDropped] {ex.Message}");
+        }
+        return Task.CompletedTask;
+    }
+
+    // ── Zoom / Pan ───────────────────────────────────────────
+    private async Task ZoomIn()
+    {
+        await JS.InvokeVoidAsync("eval",
+            "(function(){ var c=document.getElementById('st-canvas'); if(c) ServiceMap.zoomIn(c); })()");
+    }
+    private async Task ZoomOut()
+    {
+        await JS.InvokeVoidAsync("eval",
+            "(function(){ var c=document.getElementById('st-canvas'); if(c) ServiceMap.zoomOut(c); })()");
+    }
+    private async Task ResetZoom()
+    {
+        await JS.InvokeVoidAsync("eval",
+            "(function(){ var c=document.getElementById('st-canvas'); if(c) ServiceMap.resetZoom(c); })()");
+    }
+
+    // ── Theme ────────────────────────────────────────────────
+    private async Task ToggleTheme()
+    {
+        IsDark = !IsDark;
+        await JS.InvokeVoidAsync("ServiceMap.applyTheme", IsDark);
+    }
+
+    // ── Export ───────────────────────────────────────────────
+    private async Task ExportSVG() => await JS.InvokeVoidAsync("ServiceMap.exportSVG");
+    private async Task ExportPNG() => await JS.InvokeVoidAsync("ServiceMap.exportPNG");
+
+    // ── Auto Layout ──────────────────────────────────────────
+    private void RunAutoLayout()
+    {
+        TreeService.AutoLayout();
+    }
+
+    // ── Health Check ─────────────────────────────────────────
+    private async Task RunHealthCheck()
+    {
+        if (CheckingHealth) return;
+        CheckingHealth = true;
+        StateHasChanged();
+        try
+        {
+            await HealthChecker.CheckAllNowAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[HealthCheck] {ex.Message}");
+        }
+        finally
+        {
+            CheckingHealth = false;
+            StateHasChanged();
+        }
+    }
+
+    // ── Minimap ──────────────────────────────────────────────
+    private async Task UpdateMinimapAsync()
+    {
+        var nodeData = VisibleNodes.Select(n => new
+        {
+            positionX = n.PositionX,
+            positionY = n.PositionY,
+            status = n.Status
+        }).ToList();
+
+        await JS.InvokeVoidAsync("eval",
+            $@"(function(){{
+                var c = document.getElementById('minimap-canvas');
+                if(c) ServiceMap.updateMinimap(c, {System.Text.Json.JsonSerializer.Serialize(nodeData)});
+            }})()");
+    }
+
+    // ── Navigation ───────────────────────────────────────────
+    private void GoHome() { ActiveProject = null; ShowAllNodes = false; DeselectAll(); }
+    private void ShowAll() { ActiveProject = null; ShowAllNodes = true; DeselectAll(); }
+    private void SelectProject(ServiceProject p) { ActiveProject = p; ShowAllNodes = true; DeselectAll(); }
+    private void SelectNode(ServiceNode n) { SelectedNode = n; SelectedConnection = null; }
+    private void SelectConnection(ServiceConnection c) { SelectedConnection = c; SelectedNode = null; }
+    private void DeselectAll() { SelectedNode = null; SelectedConnection = null; }
+
+    private bool IsRelated(ServiceNode node) =>
+        SelectedNode is not null && TreeService.Connections.Any(c =>
+            (c.SourceId == SelectedNode.Id && c.TargetId == node.Id) ||
+            (c.TargetId == SelectedNode.Id && c.SourceId == node.Id));
+
+    // ── Filter toggles ───────────────────────────────────────
+    private void ToggleStatusFilter(string s, bool on) { if (on) StatusFilter.Add(s); else StatusFilter.Remove(s); }
+    private void ToggleTechFilter(string t, bool on) { if (on) TechFilter.Add(t); else TechFilter.Remove(t); }
+
+    // ── Node dialog ──────────────────────────────────────────
+    private void OpenNodeDialog(ServiceNode? node = null)
+    {
+        EditingNode = node;
+        NodeForm = node is null ? new() : new NodeFormModel
+        {
+            Name = node.Name,
+            Owner = node.Owner,
+            Team = node.Team,
+            Description = node.Description,
+            Status = node.Status,
+            Technology = node.Technology,
+            Version = node.Version,
+            SwaggerUrl = node.SwaggerUrl,
+            WsdlUrl = node.WsdlUrl,
+            HealthCheckUrl = node.HealthCheckUrl,
+            ProjectIds = node.ProjectIds.ToList()
+        };
+        if (ActiveProject is not null && !NodeForm.ProjectIds.Contains(ActiveProject.Id))
+            NodeForm.ProjectIds.Add(ActiveProject.Id);
+        ShowNodeDialog = true;
+        ShowProjectDropdown = false;
+    }
+
+    private void ToggleNodeProject(Guid projId, bool on)
+    {
+        if (on) { if (!NodeForm.ProjectIds.Contains(projId)) NodeForm.ProjectIds.Add(projId); }
+        else NodeForm.ProjectIds.Remove(projId);
+    }
+
+    private void SaveNode()
+    {
+        if (string.IsNullOrWhiteSpace(NodeForm.Name)) return;
+        var rng = new Random();
+
+        if (EditingNode is null)
+        {
+            TreeService.AddNode(new ServiceNode
+            {
+                Name = NodeForm.Name,
+                Owner = NodeForm.Owner,
+                Team = NodeForm.Team,
+                Description = NodeForm.Description,
+                Status = NodeForm.Status,
+                Technology = NodeForm.Technology,
+                Version = NodeForm.Version,
+                SwaggerUrl = NodeForm.SwaggerUrl,
+                WsdlUrl = NodeForm.WsdlUrl,
+                HealthCheckUrl = NodeForm.HealthCheckUrl,
+                ProjectIds = NodeForm.ProjectIds,
+                PositionX = rng.Next(100, 800),
+                PositionY = rng.Next(80, 450)
+            });
+        }
+        else
+        {
+            EditingNode.Name = NodeForm.Name; EditingNode.Owner = NodeForm.Owner;
+            EditingNode.Team = NodeForm.Team; EditingNode.Description = NodeForm.Description;
+            EditingNode.Status = NodeForm.Status; EditingNode.Technology = NodeForm.Technology;
+            EditingNode.Version = NodeForm.Version; EditingNode.SwaggerUrl = NodeForm.SwaggerUrl;
+            EditingNode.WsdlUrl = NodeForm.WsdlUrl; EditingNode.HealthCheckUrl = NodeForm.HealthCheckUrl;
+            EditingNode.ProjectIds = NodeForm.ProjectIds;
+            TreeService.UpdateNode(EditingNode);
+        }
+        CloseDialogs();
+    }
+
+    // ── Delete node ──────────────────────────────────────────
+    private void ConfirmDeleteNode(ServiceNode n) { NodeToDelete = n; ShowDeleteConfirm = true; }
+    private void ExecuteDeleteNode()
+    {
+        if (NodeToDelete is not null)
+        {
+            if (SelectedNode?.Id == NodeToDelete.Id) SelectedNode = null;
+            TreeService.RemoveNode(NodeToDelete.Id);
+            NodeToDelete = null;
+        }
+        ShowDeleteConfirm = false;
+    }
+
+    // ── Connection dialog ─────────────────────────────────────
+    private void OpenAddConnectionDialog(ServiceNode? preselect = null)
+    {
+        ConnForm = new ConnectionFormModel { SourceIdStr = preselect?.Id.ToString() ?? "" };
+        ShowConnectionDialog = true;
+    }
+
+    private void SaveConnection()
+    {
+        if (!Guid.TryParse(ConnForm.SourceIdStr, out var src)) return;
+        if (!Guid.TryParse(ConnForm.TargetIdStr, out var tgt)) return;
+        if (src == tgt) return;
+        TreeService.AddConnection(new ServiceConnection
+        {
+            SourceId = src,
+            TargetId = tgt,
+            Label = ConnForm.Label,
+            ConnectionType = ConnForm.ConnectionType
+        });
+        CloseDialogs();
+    }
+
+    private void DeleteSelectedConnection()
+    {
+        if (SelectedConnection is not null)
+        {
+            TreeService.RemoveConnection(SelectedConnection.Id);
+            SelectedConnection = null;
+        }
+    }
+
+    // ── Project dialog ────────────────────────────────────────
+    private void OpenProjectDialog(ServiceProject? proj = null)
+    {
+        EditingProject = proj;
+        ProjForm = proj is null ? new() : new ProjectFormModel
+        {
+            Name = proj.Name,
+            Description = proj.Description,
+            Owner = proj.Owner,
+            Color = proj.Color,
+            Status = proj.Status
+        };
+        ShowProjectDialog = true;
+    }
+
+    private void SaveProject()
+    {
+        if (string.IsNullOrWhiteSpace(ProjForm.Name)) return;
+        if (EditingProject is null)
+        {
+            TreeService.AddProject(new ServiceProject
+            {
+                Name = ProjForm.Name,
+                Description = ProjForm.Description,
+                Owner = ProjForm.Owner,
+                Color = ProjForm.Color,
+                Icon = "📁",   // fixed neutral default — no user input
+                Status = ProjForm.Status
+            });
+        }
+        else
+        {
+            EditingProject.Name = ProjForm.Name; EditingProject.Description = ProjForm.Description;
+            EditingProject.Owner = ProjForm.Owner; EditingProject.Color = ProjForm.Color;
+            // Icon intentionally not updated — fixed default
+            EditingProject.Status = ProjForm.Status;
+            TreeService.UpdateProject(EditingProject);
+        }
+        CloseDialogs();
+    }
+
+    private void CloseDialogs()
+    {
+        ShowNodeDialog = ShowConnectionDialog = ShowProjectDialog = false;
+        ShowProjectDropdown = false;
+        EditingNode = null; EditingProject = null;
+    }
+
+    // ── Delete project ────────────────────────────────────────
+    private void DeleteProject(ServiceProject project)
+    {
+        if (ActiveProject?.Id == project.Id)
+        {
+            ActiveProject = null;
+            ShowAllNodes = false;
+            DeselectAll();
+        }
+        TreeService.RemoveProject(project.Id);
+    }
+
+    // ── Helpers ──────────────────────────────────────────────
+    private static string GetStatusIcon(string status) => status switch
+    {
+        "Down" => "🔴",
+        "Degraded" => "🟡",
+        _ => "🟢"
+    };
+
+    private static (string color, string markerId) GetConnStyle(string type) => type switch
+    {
+        "REST" => ("#4f86c6", "arr-rest"),
+        "SOAP" => ("#8e44ad", "arr-soap"),
+        "MQ" => ("#e67e22", "arr-mq"),
+        "gRPC" => ("#16a085", "arr-grpc"),
+        "JAR" => ("#f1c40f", "arr-jar"),
+        "Anasistem" => ("#c0392b", "arr-default"),
+        "UI" => ("#f8fafc", "arr-ui"),
+        _ => ("#7f8c8d", "arr-default")
+    };
+
+    // ── Form models ───────────────────────────────────────────
+    private class NodeFormModel
+    {
+        public string Name { get; set; } = "";
+        public string Owner { get; set; } = "";
+        public string Team { get; set; } = "";
+        public string Description { get; set; } = "";
+        public string Status { get; set; } = "Active";
+        public string Technology { get; set; } = "REST";
+        public string Version { get; set; } = "";
+        public string SwaggerUrl { get; set; } = "";
+        public string WsdlUrl { get; set; } = "";
+        public string HealthCheckUrl { get; set; } = "";
+        public List<Guid> ProjectIds { get; set; } = new();
+    }
+
+    private class ConnectionFormModel
+    {
+        public string SourceIdStr { get; set; } = "";
+        public string TargetIdStr { get; set; } = "";
+        public string Label { get; set; } = "";
+        public string ConnectionType { get; set; } = "REST";
+    }
+
+    private class ProjectFormModel
+    {
+        public string Name { get; set; } = "";
+        public string Description { get; set; } = "";
+        public string Owner { get; set; } = "";
+        public string Color { get; set; } = "#4f86c6";
+        public string Status { get; set; } = "Active";
+    }
+}
+
+<style>
+    /* ── Floating Action Buttons (FAB) ────────────────────── */
+
+    /* Shared base */
+    .st-fab {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 0 20px 0 16px;
+        height: 44px;
+        border: none;
+        border-radius: 22px;
+        font-size: .875rem;
+        font-weight: 600;
+        cursor: pointer;
+        white-space: nowrap;
+        box-shadow: 0 4px 14px rgba(0,0,0,.18);
+        transition: transform .18s cubic-bezier(.34,1.56,.64,1), box-shadow .18s ease, filter .18s ease;
+        position: relative;
+        overflow: hidden;
+    }
+
+        .st-fab::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: rgba(255,255,255,0);
+            transition: background .15s;
+            border-radius: inherit;
+        }
+
+        .st-fab:hover {
+            transform: translateY(-3px) scale(1.04);
+            box-shadow: 0 8px 24px rgba(0,0,0,.24);
+        }
+
+            .st-fab:hover::after {
+                background: rgba(255,255,255,.12);
+            }
+
+        .st-fab:active {
+            transform: translateY(-1px) scale(.98);
+            box-shadow: 0 3px 10px rgba(0,0,0,.2);
+        }
+
+    .st-fab-icon {
+        font-size: 1.05rem;
+        line-height: 1;
+    }
+
+    .st-fab-label {
+        letter-spacing: .01em;
+    }
+
+    /* Project FAB — accent blue */
+    .st-fab-project {
+        background: linear-gradient(135deg, #4f86c6 0%, #3a6fa8 100%);
+        color: #fff;
+    }
+
+    /* Service FAB — accent teal/green */
+    .st-fab-service {
+        background: linear-gradient(135deg, #27ae60 0%, #1d8a4c 100%);
+        color: #fff;
+    }
+
+    /* ── Welcome-screen FAB row ────────────────────────────── */
+    .st-welcome-fabs {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 14px;
+        margin-top: 2rem;
+        flex-wrap: wrap;
+    }
+
+    /* ── Canvas FAB stack (bottom-left, outside zoom/pan) ─── */
+    .st-canvas-fabs {
+        position: absolute;
+        bottom: 28px;
+        left: 24px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        z-index: 50; /* above canvas nodes (z 1-10) but below modals */
+        pointer-events: all; /* clicks work even though parent canvas passes through */
+    }
+
+    /* ── Back / Home button ────────────────────────────────── */
+    .st-btn-home {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 4px 10px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--surface, #fff);
+        color: var(--text1, #1a1f2e);
+        font-size: .8rem;
+        font-weight: 500;
+        cursor: pointer;
+        transition: background .15s, border-color .15s, color .15s;
+        white-space: nowrap;
+    }
+
+        .st-btn-home:hover {
+            background: var(--accent, #4f86c6);
+            border-color: var(--accent, #4f86c6);
+            color: #fff;
+        }
+
+    .st-breadcrumb-sep {
+        color: var(--text2, #888);
+        font-size: .9rem;
+        padding: 0 2px;
+        user-select: none;
+    }
+
+    /* ── Onboarding Guide Modal ─────────────────────────── */
+    .st-guide-modal {
+        max-width: 560px;
+        width: 95vw;
+    }
+
+    .st-guide-body {
+        padding: 1rem 1.25rem;
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+        max-height: 60vh;
+        overflow-y: auto;
+    }
+
+    .st-guide-step {
+        display: flex;
+        align-items: flex-start;
+        gap: 14px;
+    }
+
+    .st-guide-num {
+        flex-shrink: 0;
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        background: var(--accent, #4f86c6);
+        color: #fff;
+        font-size: .8rem;
+        font-weight: 700;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin-top: 2px;
+    }
+
+    .st-guide-step strong {
+        display: block;
+        margin-bottom: 4px;
+        font-size: .9rem;
+        color: var(--text1, #1a1f2e);
+    }
+
+    .st-guide-step p {
+        margin: 0;
+        font-size: .83rem;
+        color: var(--text2, #64748b);
+        line-height: 1.5;
+    }
+
+    .st-guide-step em {
+        font-style: normal;
+        font-weight: 600;
+        color: var(--accent, #4f86c6);
+    }
+
+    /* ── Empty state welcome ────────────────────────────── */
+    .st-welcome-empty {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        text-align: center;
+        max-width: 540px;
+        margin: 0 auto;
+    }
+
+    .st-welcome-sub {
+        color: var(--text2, #64748b);
+        font-size: .95rem;
+        margin-bottom: 1.5rem;
+        max-width: 400px;
+    }
+
+    .st-welcome-features {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+        margin-bottom: 2rem;
+        width: 100%;
+    }
+
+    .st-feature-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        background: var(--surface, #fff);
+        border: 1px solid var(--border, #e2e8f0);
+        border-radius: 8px;
+        padding: 10px 12px;
+        font-size: .83rem;
+        color: var(--text2, #64748b);
+        text-align: left;
+    }
+
+    .st-feature-icon {
+        font-size: 1.1rem;
+        flex-shrink: 0;
+    }
+
+    .st-btn-guide-inline {
+        background: none;
+        border: 1px solid var(--border, #e2e8f0);
+        border-radius: 20px;
+        padding: 8px 16px;
+        font-size: .85rem;
+        color: var(--text2, #64748b);
+        cursor: pointer;
+        transition: border-color .15s, color .15s;
+    }
+
+        .st-btn-guide-inline:hover {
+            border-color: var(--accent, #4f86c6);
+            color: var(--accent, #4f86c6);
+        }
+
+    /* ── Rehber toolbar button ──────────────────────────── */
+    .st-btn-guide {
+        background: linear-gradient(135deg, #f0f4ff, #e8eeff) !important;
+        color: #4f86c6 !important;
+        border-color: #c5d5f0 !important;
+    }
+
+    /* ── Project color dot in sidebar (replaces emoji) ─── */
+    .st-project-color-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        flex-shrink: 0;
+        display: inline-block;
+    }
+
+    /* ── Project color swatch in detail panel ───────────── */
+    .st-proj-color-swatch {
+        display: inline-block;
+        width: 10px;
+        height: 10px;
+        border-radius: 2px;
+        vertical-align: middle;
+        margin-right: 3px;
+    }
+
+    /* ── Dropdown color dot ─────────────────────────────── */
+    .st-option-color {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        display: inline-block;
+        flex-shrink: 0;
+    }
+
+    /* ── Multi-select combobox ─────────────────────────── */
+    .st-multiselect {
+        position: relative;
+        width: 100%;
+    }
+
+    .st-multiselect-trigger {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        min-height: 38px;
+        padding: 4px 10px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--input-bg, #fff);
+        cursor: pointer;
+        gap: 6px;
+        flex-wrap: wrap;
+        transition: border-color .15s;
+    }
+
+        .st-multiselect-trigger:hover,
+        .st-multiselect.open .st-multiselect-trigger {
+            border-color: var(--accent, #4f86c6);
+        }
+
+    .st-multiselect-placeholder {
+        color: #aaa;
+        font-size: .875rem;
+    }
+
+    .st-multiselect-arrow {
+        margin-left: auto;
+        font-size: .7rem;
+        color: #888;
+        flex-shrink: 0;
+    }
+
+    .st-multiselect-tags {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        flex: 1;
+    }
+
+    .st-tag {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        padding: 2px 6px;
+        border-radius: 4px;
+        border: 1px solid #ccc;
+        background: var(--tag-bg, #f0f4ff);
+        font-size: .8rem;
+        white-space: nowrap;
+    }
+
+    .st-tag-remove {
+        background: none;
+        border: none;
+        cursor: pointer;
+        color: #888;
+        font-size: .75rem;
+        padding: 0 2px;
+        line-height: 1;
+    }
+
+        .st-tag-remove:hover {
+            color: #e74c3c;
+        }
+
+    .st-multiselect-dropdown {
+        position: absolute;
+        top: calc(100% + 4px);
+        left: 0;
+        right: 0;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--modal-bg, #fff);
+        box-shadow: 0 4px 16px rgba(0,0,0,.12);
+        z-index: 9999;
+        max-height: 200px;
+        overflow-y: auto;
+    }
+
+    .st-multiselect-option {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        cursor: pointer;
+        font-size: .875rem;
+        transition: background .1s;
+    }
+
+        .st-multiselect-option:hover {
+            background: var(--hover-bg, #f5f8ff);
+        }
+
+        .st-multiselect-option.selected {
+            background: var(--selected-bg, #eef3ff);
+            font-weight: 500;
+        }
+
+    .st-option-check {
+        width: 14px;
+        color: var(--accent, #4f86c6);
+        font-size: .85rem;
+    }
+
+    /* Legend sağ alta taşındı */
+    .st-legend {
+        position: absolute;
+        right: 24px;
+        bottom: 24px;
+        left: auto !important;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        background: var(--surface, #fff);
+        border: 1px solid var(--border, #e2e8f0);
+        border-radius: 12px;
+        padding: 8px 14px;
+        box-shadow: 0 6px 18px rgba(0,0,0,.12);
+        z-index: 60; /* butonların üstünde */
+    }
+
+    .st-node-tech.anasistem, .st-tech-pill.anasistem {
+        background: #c0392b20;
+        color: #c0392b;
+        border-color: #c0392b40;
+    }
+
+    .st-node-tech.ui, .st-tech-pill.ui {
+        background: #f8fafc;
+        color: #475569;
+        border-color: #94a3b8;
+    }
+
+    /* ── Degraded status ────────────────────────────────────── */
+    .st-status-dot.st-status-degraded {
+        background: #f59e0b;
+    }
+
+    .st-node.degraded {
+        border-top-color: #f59e0b;
+    }
+
+    .st-node-status.degraded {
+        color: #f59e0b;
+    }
+
+    .st-detail-status.degraded {
+        background: #fffbeb;
+        color: #b45309;
+    }
+
+    /* ── Project delete button ──────────────────────────────── */
+    .st-project-delete-btn {
+        background: none;
+        border: none;
+        cursor: pointer;
+        color: #94a3b8;
+        font-size: .8rem;
+        padding: 2px 5px;
+        border-radius: 4px;
+        line-height: 1;
+        opacity: 0;
+        transition: opacity .15s, color .15s, background .15s;
+        flex-shrink: 0;
+    }
+
+    .st-project-item:hover .st-project-delete-btn,
+    .st-project-btn:hover + .st-project-delete-btn,
+    .st-project-item.open .st-project-delete-btn {
+        opacity: 1;
+    }
+
+    .st-project-delete-btn:hover {
+        color: #ef4444;
+        background: #fee2e2;
+    }
+
+    .st-project-btn-row {
+        display: flex;
+        align-items: center;
+        width: 100%;
+        gap: 0;
+    }
+</style>
