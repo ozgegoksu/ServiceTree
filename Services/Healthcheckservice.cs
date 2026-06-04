@@ -1,4 +1,4 @@
-﻿using ServiceTreeDemo.Models;
+using ServiceTreeDemo.Models;
 
 namespace ServiceTreeDemo.Services;
 
@@ -60,7 +60,7 @@ public class HealthCheckService : BackgroundService
         try
         {
             var response = await client.GetAsync(node.HealthCheckUrl);
-            node.Status = response.IsSuccessStatusCode ? "Active" : "Degraded";
+            node.Status = response.IsSuccessStatusCode ? "Active" : "Down";
             node.LastHealthCheck = DateTime.Now;
             _logger.LogInformation("Health check {Name}: {Status}", node.Name, node.Status);
         }

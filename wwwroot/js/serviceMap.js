@@ -1,4 +1,3 @@
-﻿
 window.ServiceMap = (() => {
 
     function applyTheme(dark) {
@@ -48,8 +47,16 @@ window.ServiceMap = (() => {
             const rect = canvasEl.getBoundingClientRect();
             const scale = getScale();
 
-            const x = Math.max(0, (e.clientX - rect.left + canvasEl.scrollLeft) / scale - ox);
-            const y = Math.max(0, (e.clientY - rect.top + canvasEl.scrollTop) / scale - oy);
+            const inner = canvasEl.querySelector('.st-canvas-inner') || canvasEl;
+            const nodeW = el.offsetWidth || 155;
+            const nodeH = el.offsetHeight || 95;
+            const maxX = Math.max(0, (inner.scrollWidth || inner.offsetWidth || 1600) - nodeW);
+            const maxY = Math.max(0, (inner.scrollHeight || inner.offsetHeight || 900) - nodeH);
+
+            const rawX = (e.clientX - rect.left + canvasEl.scrollLeft) / scale - ox;
+            const rawY = (e.clientY - rect.top + canvasEl.scrollTop) / scale - oy;
+            const x = Math.min(Math.max(0, rawX), maxX);
+            const y = Math.min(Math.max(0, rawY), maxY);
 
             el.style.left = x + 'px';
             el.style.top = y + 'px';
@@ -163,7 +170,6 @@ window.ServiceMap = (() => {
 
     function getStatusFromNode(el) {
         if (el.classList.contains('active')) return 'Active';
-        if (el.classList.contains('degraded')) return 'Degraded';
         if (el.classList.contains('down')) return 'Down';
         return 'Active';
     }
@@ -217,9 +223,7 @@ window.ServiceMap = (() => {
         const H = Math.max(maxY - vbY + pad, 500);
 
         const statusColor = s =>
-            s === 'Active' ? '#27ae60' :
-                s === 'Degraded' ? '#f39c12' :
-                    '#e74c3c';
+            s === 'Active' ? '#27ae60' : '#e74c3c';
 
         const techColor = t => ({
             REST: '#4f86c6',
@@ -352,6 +356,7 @@ window.ServiceMap = (() => {
 
     function updateMinimap(minimapEl, nodes) {
         if (!minimapEl) return;
+        nodes = Array.isArray(nodes) ? nodes : [];
 
         const mm = minimapEl;
         const mmW = mm.clientWidth || 160;
@@ -378,9 +383,7 @@ window.ServiceMap = (() => {
             const h = 95 * scaleY;
 
             ctx.fillStyle =
-                n.status === 'Active' ? '#27ae60' :
-                    n.status === 'Degraded' ? '#f39c12' :
-                        '#e74c3c';
+                n.status === 'Active' ? '#27ae60' : '#e74c3c';
 
             ctx.fillRect(x, y, w, h);
         });

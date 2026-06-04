@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using ServiceTreeDemo.Data;
 using ServiceTreeDemo.Models;
 
@@ -20,6 +20,7 @@ public class ServiceTreeService
 
     private readonly IDbContextFactory<AppDbContext> _dbFactory;
     private bool _loaded = false;
+    private readonly SemaphoreSlim _saveLock = new(1, 1);
 
     public ServiceTreeService(IDbContextFactory<AppDbContext> dbFactory)
     {
@@ -44,6 +45,24 @@ public class ServiceTreeService
             Nodes = await db.Nodes.ToListAsync();
             Connections = await db.Connections.ToListAsync();
             Projects = await db.Projects.ToListAsync();
+
+            // Clean stale/orphan data on startup. This prevents deleted services
+            // from reappearing through old connections or invalid project links.
+            var nodeIds = Nodes.Select(n => n.Id).ToHashSet();
+            var projectIds = Projects.Select(p => p.Id).ToHashSet();
+            Connections.RemoveAll(c => !nodeIds.Contains(c.SourceId) || !nodeIds.Contains(c.TargetId));
+            foreach (var node in Nodes)
+            {
+                node.ProjectIds = node.ProjectIds.Where(projectIds.Contains).Distinct().ToList();
+
+                // Refactor: Normalize status to only Active/Down
+                if (node.Status != "Active")
+                {
+                    node.Status = "Down";
+                }
+            }
+
+            await PersistAllAsync();
         }
         // First run → no seed, just empty. Users add their own data.
     }
@@ -58,49 +77,71 @@ public class ServiceTreeService
 
     private async Task PersistAllAsync()
     {
-        await using var db = await _dbFactory.CreateDbContextAsync();
-
-        // Nodes
-        var dbNodeIds = await db.Nodes.Select(n => n.Id).ToListAsync();
-        var memNodeIds = Nodes.Select(n => n.Id).ToHashSet();
-
-        db.Nodes.RemoveRange(db.Nodes.Where(n => !memNodeIds.Contains(n.Id)));
-        foreach (var node in Nodes)
+        await _saveLock.WaitAsync();
+        try
         {
-            if (dbNodeIds.Contains(node.Id))
-                db.Nodes.Update(node);
-            else
-                db.Nodes.Add(node);
+            await using var db = await _dbFactory.CreateDbContextAsync();
+
+            // Nodes
+            var dbNodeIds = await db.Nodes.Select(n => n.Id).ToListAsync();
+            var memNodeIds = Nodes.Select(n => n.Id).ToHashSet();
+
+            db.Nodes.RemoveRange(db.Nodes.Where(n => !memNodeIds.Contains(n.Id)));
+            foreach (var node in Nodes)
+            {
+                if (dbNodeIds.Contains(node.Id))
+                    db.Nodes.Update(node);
+                else
+                    db.Nodes.Add(node);
+            }
+
+            // Connections
+            var dbConnIds = await db.Connections.Select(c => c.Id).ToListAsync();
+            var memConnIds = Connections.Select(c => c.Id).ToHashSet();
+
+            db.Connections.RemoveRange(db.Connections.Where(c => !memConnIds.Contains(c.Id)));
+            foreach (var conn in Connections)
+            {
+                if (dbConnIds.Contains(conn.Id))
+                    db.Connections.Update(conn);
+                else
+                    db.Connections.Add(conn);
+            }
+
+            // Projects
+            var dbProjIds = await db.Projects.Select(p => p.Id).ToListAsync();
+            var memProjIds = Projects.Select(p => p.Id).ToHashSet();
+
+            db.Projects.RemoveRange(db.Projects.Where(p => !memProjIds.Contains(p.Id)));
+            foreach (var proj in Projects)
+            {
+                if (dbProjIds.Contains(proj.Id))
+                    db.Projects.Update(proj);
+                else
+                    db.Projects.Add(proj);
+            }
+
+            await db.SaveChangesAsync();
         }
-
-        // Connections
-        var dbConnIds = await db.Connections.Select(c => c.Id).ToListAsync();
-        var memConnIds = Connections.Select(c => c.Id).ToHashSet();
-
-        db.Connections.RemoveRange(db.Connections.Where(c => !memConnIds.Contains(c.Id)));
-        foreach (var conn in Connections)
+        finally
         {
-            if (dbConnIds.Contains(conn.Id))
-                db.Connections.Update(conn);
-            else
-                db.Connections.Add(conn);
+            _saveLock.Release();
         }
-
-        // Projects
-        var dbProjIds = await db.Projects.Select(p => p.Id).ToListAsync();
-        var memProjIds = Projects.Select(p => p.Id).ToHashSet();
-
-        db.Projects.RemoveRange(db.Projects.Where(p => !memProjIds.Contains(p.Id)));
-        foreach (var proj in Projects)
-        {
-            if (dbProjIds.Contains(proj.Id))
-                db.Projects.Update(proj);
-            else
-                db.Projects.Add(proj);
-        }
-
-        await db.SaveChangesAsync();
     }
+
+    private void SaveInBackground()
+    {
+        _ = Task.Run(async () =>
+        {
+            try { await SaveAsync(); }
+            catch (Exception ex) { Console.Error.WriteLine($"[ServiceTreeService.Save] {ex.Message}"); }
+        });
+    }
+
+    private static string NormalizeName(string? value) => (value ?? string.Empty).Trim().ToUpperInvariant();
+
+    public bool NodeNameExists(string name, Guid? exceptId = null) =>
+        Nodes.Any(n => NormalizeName(n.Name) == NormalizeName(name) && (!exceptId.HasValue || n.Id != exceptId.Value));
 
     // ── Auto-layout (Sugiyama-lite, overlap-free) ─────────────────────────
     public void AutoLayout()
@@ -145,7 +186,7 @@ public class ServiceTreeService
         }
 
         FixOverlaps();
-        _ = SaveAsync();
+        SaveInBackground();
         NotifyChange();
     }
 
@@ -199,16 +240,22 @@ public class ServiceTreeService
 
     public void AddNode(ServiceNode node)
     {
+        node.Name = node.Name.Trim();
+        if (string.IsNullOrWhiteSpace(node.Name) || NodeNameExists(node.Name)) return;
+        node.ProjectIds = node.ProjectIds.Distinct().ToList();
         Nodes.Add(node);
-        _ = SaveAsync();
+        SaveInBackground();
         Notify();
     }
 
     public void UpdateNode(ServiceNode node)
     {
+        node.Name = node.Name.Trim();
+        if (string.IsNullOrWhiteSpace(node.Name) || NodeNameExists(node.Name, node.Id)) return;
+        node.ProjectIds = node.ProjectIds.Distinct().ToList();
         // The caller mutates the object in-place; the in-memory list already
         // holds a reference to it, so we just persist.
-        _ = SaveAsync();
+        SaveInBackground();
         Notify();
     }
 
@@ -216,7 +263,7 @@ public class ServiceTreeService
     {
         Nodes.RemoveAll(n => n.Id == id);
         Connections.RemoveAll(c => c.SourceId == id || c.TargetId == id);
-        _ = SaveAsync();
+        SaveInBackground();
         Notify();
     }
 
@@ -226,7 +273,7 @@ public class ServiceTreeService
         if (node is null) return;
         node.PositionX = x;
         node.PositionY = y;
-        _ = SaveAsync();
+        SaveInBackground();
         Notify();
     }
 
@@ -262,28 +309,35 @@ public class ServiceTreeService
 
     public void AddConnection(ServiceConnection conn)
     {
+        if (conn.SourceId == conn.TargetId) return;
+        if (GetNode(conn.SourceId) is null || GetNode(conn.TargetId) is null) return;
+        if (Connections.Any(c => c.SourceId == conn.SourceId && c.TargetId == conn.TargetId &&
+                                 string.Equals(c.ConnectionType, conn.ConnectionType, StringComparison.OrdinalIgnoreCase)))
+            return;
+
+        conn.Label = string.IsNullOrWhiteSpace(conn.Label) ? conn.ConnectionType : conn.Label.Trim();
         Connections.Add(conn);
-        _ = SaveAsync();
+        SaveInBackground();
         Notify();
     }
 
     public void RemoveConnection(Guid id)
     {
         Connections.RemoveAll(c => c.Id == id);
-        _ = SaveAsync();
+        SaveInBackground();
         Notify();
     }
 
     public void AddProject(ServiceProject project)
     {
         Projects.Add(project);
-        _ = SaveAsync();
+        SaveInBackground();
         Notify();
     }
 
     public void UpdateProject(ServiceProject project)
     {
-        _ = SaveAsync();
+        SaveInBackground();
         Notify();
     }
 
@@ -291,7 +345,7 @@ public class ServiceTreeService
     {
         Projects.RemoveAll(p => p.Id == id);
         foreach (var n in Nodes) n.ProjectIds.Remove(id);
-        _ = SaveAsync();
+        SaveInBackground();
         Notify();
     }
 

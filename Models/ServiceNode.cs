@@ -1,4 +1,4 @@
-﻿namespace ServiceTreeDemo.Models;
+namespace ServiceTreeDemo.Models;
 
 public class ServiceNode
 {
@@ -6,7 +6,7 @@ public class ServiceNode
     public string Name { get; set; } = string.Empty;
     public string Description { get; set; } = string.Empty;
     public string Owner { get; set; } = string.Empty;
-    public string Status { get; set; } = "Active"; // Active | Degraded | Down
+    public string Status { get; set; } = "Active"; // Active | Down
     public string Technology { get; set; } = string.Empty; // REST | SOAP | JAR | Mainframe | gRPC | MQ
     public string SwaggerUrl { get; set; } = string.Empty;
     public string WsdlUrl { get; set; } = string.Empty;

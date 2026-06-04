@@ -1,4 +1,4 @@
-﻿/* ═══════════════════════════════════════════════════════════
+/* ═══════════════════════════════════════════════════════════
    ServiceMap — Professional Service Dependency Visualizer
    Dark mode + Zoom + Minimap + Export
    ═══════════════════════════════════════════════════════════ */
@@ -441,9 +441,6 @@ html, body {
         background: #27ae60;
     }
 
-    .st-status-dot.st-status-degraded {
-        background: #f39c12;
-    }
 
     .st-status-dot.st-status-down {
         background: #e74c3c;
@@ -694,9 +691,6 @@ html, body {
         opacity: 1;
     }
 
-    .st-node.degraded {
-        border-top: 3px solid #f39c12;
-    }
 
     .st-node.down {
         border-top: 3px solid #e74c3c;
@@ -920,10 +914,6 @@ html, body {
         color: #155724;
     }
 
-    .st-detail-status.degraded {
-        background: #fff3cd;
-        color: #856404;
-    }
 
     .st-detail-status.down {
         background: #f8d7da;
@@ -1226,6 +1216,7 @@ textarea.st-input {
 ::-webkit-scrollbar-track {
     background: transparent;
 }
+
 ::-webkit-scrollbar-thumb {
     background: var(--border2);
     border-radius: 6px;
@@ -1237,7 +1228,6 @@ textarea.st-input {
         --detail-w: 240px;
         --sidebar-w: 210px;
     }
-
 }
 /* Ghost node — farklı projeden, read-only */
 .st-node.ghost {
@@ -1292,4 +1282,21 @@ textarea.st-input {
     margin-left: auto;
     flex-shrink: 0;
 }
- 
+
+
+/* Inline delete button for dependency/connection rows */
+.st-inline-delete {
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    font-size: 0.75rem;
+    opacity: 0.65;
+    padding: 2px 5px;
+    border-radius: 4px;
+    margin-left: 4px;
+}
+
+    .st-inline-delete:hover {
+        opacity: 1;
+        background: #fef2f2;
+    }

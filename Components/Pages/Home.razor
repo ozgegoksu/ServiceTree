@@ -1,4 +1,4 @@
-﻿@page "/"
+@page "/"
 @using ServiceTreeDemo
 @using ServiceTreeDemo.Models
 @using ServiceTreeDemo.Services
@@ -546,6 +546,13 @@
                             <span class="st-status-dot st-status-@up!.Status.ToLower()"></span>
                             <span class="st-dep-name">@up!.Name</span>
                             <span class="st-leaf-tech">@up!.Technology</span>
+                            @{
+                                var upConn = TreeService.Connections.FirstOrDefault(c => c.SourceId == up!.Id && c.TargetId == SelectedNode.Id);
+                            }
+                            @if (upConn is not null)
+                            {
+                                <button class="st-inline-delete" title="Bağlantıyı sil" @onclick:stopPropagation @onclick="() => DeleteConnection(upConn.Id)">🗑</button>
+                            }
                             @if (isCrossUp)
                             {
                                 <span class="st-dep-cross-badge" title="Farklı projeden">↗</span>
@@ -564,6 +571,13 @@
                             <span class="st-status-dot st-status-@down!.Status.ToLower()"></span>
                             <span class="st-dep-name">@down!.Name</span>
                             <span class="st-leaf-tech">@down!.Technology</span>
+                            @{
+                                var downConn = TreeService.Connections.FirstOrDefault(c => c.SourceId == SelectedNode.Id && c.TargetId == down!.Id);
+                            }
+                            @if (downConn is not null)
+                            {
+                                <button class="st-inline-delete" title="Bağlantıyı sil" @onclick:stopPropagation @onclick="() => DeleteConnection(downConn.Id)">🗑</button>
+                            }
                             @if (isCrossDown)
                             {
                                 <span class="st-dep-cross-badge" title="Farklı projeden">↗</span>
@@ -737,7 +751,7 @@
                     <label>Kaynak Servis *</label>
                     <select class="st-select" @bind="ConnForm.SourceIdStr">
                         <option value="">— Seçin —</option>
-                        @foreach (var n in TreeService.Nodes)
+                        @foreach (var n in ConnectionCandidateNodes)
                         {
                             <option value="@n.Id">@n.Name</option>
                         }
@@ -747,7 +761,7 @@
                     <label>Hedef Servis *</label>
                     <select class="st-select" @bind="ConnForm.TargetIdStr">
                         <option value="">— Seçin —</option>
-                        @foreach (var n in TreeService.Nodes)
+                        @foreach (var n in ConnectionTargetCandidateNodes)
                         {
                             <option value="@n.Id">@n.Name</option>
                         }
@@ -881,7 +895,7 @@
                     <div class="st-guide-num">5</div>
                     <div>
                         <strong>Health Check</strong>
-                        <p>Her servise bir Health Check URL ekleyin. <em>📡 Kontrol</em> butonuyla tüm servislerin durumunu gerçek zamanlı sorgulayın. Yeşil = Active, Sarı = Degraded, Kırmızı = Down.</p>
+                        <p>Her servise bir Health Check URL ekleyin. <em>📡 Kontrol</em> butonuyla tüm servislerin durumunu gerçek zamanlı sorgulayın. Yeşil = Active, Kırmızı = Down.</p>
                     </div>
                 </div>
                 <div class="st-guide-step">
@@ -905,6 +919,8 @@
     // ── Constants ───────────────────────────────────────────
     private const double NodeW = 155;
     private const double NodeH = 95;
+    private const double CanvasW = 1600;
+    private const double CanvasH = 900;
 
     // ── State ───────────────────────────────────────────────
     private ServiceProject? ActiveProject;
@@ -970,6 +986,23 @@
         }
     }
 
+    private List<ServiceNode> ConnectionCandidateNodes =>
+        (ShowAllNodes || ActiveProject is not null ? VisibleNodes : TreeService.Nodes)
+        .Where(n => TreeService.GetNode(n.Id) is not null)
+        .OrderBy(n => n.Name)
+        .ToList();
+
+    private List<ServiceNode> ConnectionTargetCandidateNodes
+    {
+        get
+        {
+            var nodes = ConnectionCandidateNodes;
+            if (Guid.TryParse(ConnForm.SourceIdStr, out var src))
+                nodes = nodes.Where(n => n.Id != src).ToList();
+            return nodes;
+        }
+    }
+
     private List<ServiceProject> FilteredProjects
     {
         get
@@ -1029,6 +1062,10 @@
             // Update minimap
             await UpdateMinimapAsync();
         }
+        else
+        {
+            await ClearMinimapAsync();
+        }
     }
 
     public void Dispose()
@@ -1043,6 +1080,7 @@
     // A void return causes the circuit to fault when JS awaits the promise.
 
     private System.Threading.Timer? _positionDebounce;
+    private DateTime _lastDragRender = DateTime.MinValue;
 
     [JSInvokable]
     public Task OnNodeDragging(string nodeIdStr, double x, double y)
@@ -1054,10 +1092,14 @@
             var node = TreeService.GetNode(id);
             if (node is not null)
             {
-                node.PositionX = Math.Max(0, x);
-                node.PositionY = Math.Max(0, y);
-                // Trigger a lightweight re-render for SVG arrow updates
-                InvokeAsync(StateHasChanged);
+                node.PositionX = Clamp(x, 0, CanvasW - NodeW);
+                node.PositionY = Clamp(y, 0, CanvasH - NodeH);
+                // Throttle render during drag to prevent Blazor/DOM flicker.
+                if ((DateTime.UtcNow - _lastDragRender).TotalMilliseconds > 80)
+                {
+                    _lastDragRender = DateTime.UtcNow;
+                    InvokeAsync(StateHasChanged);
+                }
             }
         }
         return Task.CompletedTask;
@@ -1075,8 +1117,10 @@
             if (node is null)
                 return Task.CompletedTask;
 
-            double safeX = Math.Max(0, double.IsNaN(x) || double.IsInfinity(x) ? node.PositionX : x);
-            double safeY = Math.Max(0, double.IsNaN(y) || double.IsInfinity(y) ? node.PositionY : y);
+            double safeX = Clamp(double.IsNaN(x) || double.IsInfinity(x) ? node.PositionX : x, 0, CanvasW - NodeW);
+            double safeY = Clamp(double.IsNaN(y) || double.IsInfinity(y) ? node.PositionY : y, 0, CanvasH - NodeH);
+            node.PositionX = safeX;
+            node.PositionY = safeY;
 
             // Debounce: cancel any pending save and schedule a new one 400 ms after drop
             _positionDebounce?.Dispose();
@@ -1164,10 +1208,16 @@
             }})()");
     }
 
+    private async Task ClearMinimapAsync()
+    {
+        await JS.InvokeVoidAsync("eval",
+            "(function(){ var c=document.getElementById('minimap-canvas'); if(c) ServiceMap.updateMinimap(c, []); })()");
+    }
+
     // ── Navigation ───────────────────────────────────────────
-    private void GoHome() { ActiveProject = null; ShowAllNodes = false; DeselectAll(); }
-    private void ShowAll() { ActiveProject = null; ShowAllNodes = true; DeselectAll(); }
-    private void SelectProject(ServiceProject p) { ActiveProject = p; ShowAllNodes = true; DeselectAll(); }
+    private void GoHome() { ActiveProject = null; ShowAllNodes = false; DeselectAll(); _ = ClearMinimapAsync(); }
+    private void ShowAll() { ActiveProject = null; ShowAllNodes = true; DeselectAll(); _ = UpdateMinimapAsync(); }
+    private void SelectProject(ServiceProject p) { ActiveProject = p; ShowAllNodes = true; DeselectAll(); _ = UpdateMinimapAsync(); }
     private void SelectNode(ServiceNode n) { SelectedNode = n; SelectedConnection = null; }
     private void SelectConnection(ServiceConnection c) { SelectedConnection = c; SelectedNode = null; }
     private void DeselectAll() { SelectedNode = null; SelectedConnection = null; }
@@ -1214,6 +1264,7 @@
     private void SaveNode()
     {
         if (string.IsNullOrWhiteSpace(NodeForm.Name)) return;
+        if (TreeService.NodeNameExists(NodeForm.Name, EditingNode?.Id)) return;
         var rng = new Random();
 
         if (EditingNode is null)
@@ -1255,8 +1306,12 @@
         if (NodeToDelete is not null)
         {
             if (SelectedNode?.Id == NodeToDelete.Id) SelectedNode = null;
+            if (SelectedConnection is not null &&
+                (SelectedConnection.SourceId == NodeToDelete.Id || SelectedConnection.TargetId == NodeToDelete.Id))
+                SelectedConnection = null;
             TreeService.RemoveNode(NodeToDelete.Id);
             NodeToDelete = null;
+            _ = UpdateMinimapAsync();
         }
         ShowDeleteConfirm = false;
     }
@@ -1273,6 +1328,7 @@
         if (!Guid.TryParse(ConnForm.SourceIdStr, out var src)) return;
         if (!Guid.TryParse(ConnForm.TargetIdStr, out var tgt)) return;
         if (src == tgt) return;
+        if (!ConnectionCandidateNodes.Any(n => n.Id == src) || !ConnectionTargetCandidateNodes.Any(n => n.Id == tgt)) return;
         TreeService.AddConnection(new ServiceConnection
         {
             SourceId = src,
@@ -1283,12 +1339,20 @@
         CloseDialogs();
     }
 
+    private void DeleteConnection(Guid connectionId)
+    {
+        if (SelectedConnection?.Id == connectionId) SelectedConnection = null;
+        TreeService.RemoveConnection(connectionId);
+        _ = UpdateMinimapAsync();
+    }
+
     private void DeleteSelectedConnection()
     {
         if (SelectedConnection is not null)
         {
             TreeService.RemoveConnection(SelectedConnection.Id);
             SelectedConnection = null;
+            _ = UpdateMinimapAsync();
         }
     }
 
@@ -1353,11 +1417,13 @@
     }
 
     // ── Helpers ──────────────────────────────────────────────
+    private static double Clamp(double value, double min, double max) => Math.Min(Math.Max(value, min), max);
+
     private static string GetStatusIcon(string status) => status switch
     {
+        "Active" => "🟢",
         "Down" => "🔴",
-        "Degraded" => "🟡",
-        _ => "🟢"
+        _ => "🔴"
     };
 
     private static (string color, string markerId) GetConnStyle(string type) => type switch
@@ -1813,23 +1879,7 @@
         border-color: #94a3b8;
     }
 
-    /* ── Degraded status ────────────────────────────────────── */
-    .st-status-dot.st-status-degraded {
-        background: #f59e0b;
-    }
-
-    .st-node.degraded {
-        border-top-color: #f59e0b;
-    }
-
-    .st-node-status.degraded {
-        color: #f59e0b;
-    }
-
-    .st-detail-status.degraded {
-        background: #fffbeb;
-        color: #b45309;
-    }
+    
 
     /* ── Project delete button ──────────────────────────────── */
     .st-project-delete-btn {

@@ -1,0 +1,8 @@
+bin/
+obj/
+.vs/
+
+data/*.db
+data/*.db-shm
+data/*.db-wal
+data/*.json

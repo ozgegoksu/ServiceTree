@@ -74,7 +74,7 @@ docker rm servicemap
 | ⚙️ Servis haritası | Drag & drop ile konumlandırma |
 | 🔗 Bağlantılar | REST, SOAP, MQ, gRPC, JAR, Anasistem, UI tiplerinde bağlantı |
 | 📡 Health Check | Canlı URL bazlı durum kontrolü |
-| 🟢🟡🔴 Status | Active / Degraded / Down durum desteği |
+| 🟢🔴 Status | Active / Down durum desteği |
 | ⬇️ Export | SVG ve PNG dışa aktarma |
 | 🌙 Tema | Açık / koyu mod |
 
